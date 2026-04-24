@@ -21,12 +21,12 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data(sheet_name):
     try:
-        df = conn.read(worksheet=sheet_name, ttl=5).dropna(how="all")
-        return df
+        return conn.read(worksheet=sheet_name, ttl=5).dropna(how="all")
     except:
         cols = {
             "Transactions": ["Date", "Type", "Category", "Amount", "Bucket", "Note"],
             "Assets": ["Type", "Name", "Value", "Last_Update"],
+            "Asset_History": ["Date", "Asset_Name", "Value"],
             "Liabilities": ["Type", "Name", "Amount", "Last_Update"],
             "Buckets": ["Name", "Target", "Saved"],
             "Categories": ["Type", "Name"]
@@ -44,80 +44,47 @@ with st.sidebar:
         "Target Buckets", 
         "Settings"
     ])
-    st.markdown("---")
 
 # --- Modules ---
 
 if menu == "Financial Dashboard":
     st.title("Financial Overview 📊")
     
-    # Load Data
     df_trans = get_data("Transactions")
     df_assets = get_data("Assets")
     df_liab = get_data("Liabilities")
     df_buckets = get_data("Buckets")
     
-    # Net Worth Calculation
     total_assets = df_assets["Value"].sum() if not df_assets.empty else 0
     total_liab = df_liab["Amount"].sum() if not df_liab.empty else 0
     total_saved = df_buckets["Saved"].sum() if not df_buckets.empty else 0
     net_worth = (total_assets + total_saved) - total_liab
     
-    # Monthly Cashflow Calculation
-    current_month = datetime.now().strftime("%Y-%m")
-    monthly_income = 0
-    monthly_expense = 0
-    
-    if not df_trans.empty:
-        df_trans['Date'] = pd.to_datetime(df_trans['Date'])
-        df_trans['Month'] = df_trans['Date'].dt.strftime('%Y-%m')
-        current_month_data = df_trans[df_trans['Month'] == current_month]
-        
-        monthly_income = current_month_data[current_month_data["Type"] == "Income"]["Amount"].sum()
-        monthly_expense = current_month_data[current_month_data["Type"] == "Expense"]["Amount"].sum()
-        
-    savings_rate = ((monthly_income - monthly_expense) / monthly_income * 100) if monthly_income > 0 else 0
-
-    # Top Metrics
-    st.subheader("Global Position")
+    # Net Worth & High-level metrics
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Net Worth", f"₪{net_worth:,.0f}")
     m2.metric("Total Assets", f"₪{total_assets:,.0f}")
-    m3.metric("Target Buckets", f"₪{total_saved:,.0f}")
-    m4.metric("Total Liabilities", f"₪{total_liab:,.0f}", delta=f"-₪{total_liab:,.0f}", delta_color="inverse")
+    m3.metric("Savings Buckets", f"₪{total_saved:,.0f}")
+    m4.metric("Liabilities", f"₪{total_liab:,.0f}", delta_color="inverse")
 
     st.markdown("---")
     
-    st.subheader(f"Cashflow: {datetime.now().strftime('%B %Y')}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Monthly Income", f"₪{monthly_income:,.0f}")
-    c2.metric("Monthly Expenses", f"₪{monthly_expense:,.0f}")
-    c3.metric("Savings Rate", f"{savings_rate:.1f}%")
-
-    # Charts
-    st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if not df_trans.empty and monthly_expense > 0:
-            df_exp = current_month_data[current_month_data["Type"] == "Expense"]
-            if not df_exp.empty:
-                fig = px.pie(df_exp, values='Amount', names='Category', title='Expenses by Category', hole=0.4)
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No expense data for this month.")
-
-    with col2:
-        if not df_trans.empty:
-            df_trend = df_trans.groupby(['Month', 'Type'])['Amount'].sum().reset_index()
-            fig = px.bar(df_trend, x='Month', y='Amount', color='Type', barmode='group', title='Income vs Expense Trend')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No transaction history available.")
+    # Monthly Cashflow
+    if not df_trans.empty:
+        df_trans['Date'] = pd.to_datetime(df_trans['Date'])
+        current_month = datetime.now().strftime("%Y-%m")
+        df_trans['Month'] = df_trans['Date'].dt.strftime('%Y-%m')
+        
+        m_inc = df_trans[(df_trans['Month'] == current_month) & (df_trans['Type'] == 'Income')]['Amount'].sum()
+        m_exp = df_trans[(df_trans['Month'] == current_month) & (df_trans['Type'] == 'Expense')]['Amount'].sum()
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Income (Month)", f"₪{m_inc:,.0f}")
+        c2.metric("Expense (Month)", f"₪{m_exp:,.0f}")
+        c3.metric("Savings Rate", f"{((m_inc-m_exp)/m_inc*100):.1f}%" if m_inc > 0 else "0%")
 
 elif menu == "New Transaction":
     st.title("Log Transaction ✨")
-    
     df_cats = get_data("Categories")
     df_buckets = get_data("Buckets")
     
@@ -125,136 +92,106 @@ elif menu == "New Transaction":
         c1, c2 = st.columns(2)
         with c1:
             date = st.date_input("Date")
-            t_type = st.selectbox("Transaction Type", ["Expense", "Income"])
-            amount = st.number_input("Amount (₪)", min_value=0.0, step=50.0)
+            t_type = st.selectbox("Type", ["Expense", "Income"])
+            amount = st.number_input("Amount (₪)", min_value=0.0)
         with c2:
-            # Filter categories based on selected type
-            if not df_cats.empty:
-                filtered_cats = df_cats[df_cats["Type"] == t_type]["Name"].tolist()
-            else:
-                filtered_cats = ["Please add categories in Settings"]
-                
-            cat = st.selectbox("Category", filtered_cats if filtered_cats else ["No categories found"])
-            
-            folders_list = ["None"] + (df_buckets["Name"].tolist() if not df_buckets.empty else [])
-            folder = st.selectbox("Assign to Bucket (Optional)", folders_list)
-            note = st.text_input("Notes")
+            filtered_cats = df_cats[df_cats["Type"] == t_type]["Name"].tolist() if not df_cats.empty else []
+            cat = st.selectbox("Category", filtered_cats if filtered_cats else ["Other"])
+            folder = st.selectbox("Bucket", ["None"] + (df_buckets["Name"].tolist() if not df_buckets.empty else []))
+            note = st.text_input("Note")
         
-        if st.form_submit_button("Submit Transaction"):
-            if cat in ["Please add categories in Settings", "No categories found"]:
-                st.error("Please set up your categories in the Settings page first.")
-            else:
-                df_trans = get_data("Transactions")
-                new_row = pd.DataFrame([[date.strftime("%Y-%m-%d"), t_type, cat, amount, folder, note]], 
-                                        columns=df_trans.columns)
-                updated = pd.concat([df_trans, new_row], ignore_index=True)
-                conn.update(worksheet="Transactions", data=updated)
-                st.success("Transaction logged successfully!")
+        if st.form_submit_button("Log Transaction"):
+            df_trans = get_data("Transactions")
+            new_row = pd.DataFrame([[date.strftime("%Y-%m-%d"), t_type, cat, amount, folder, note]], columns=df_trans.columns)
+            conn.update(worksheet="Transactions", data=pd.concat([df_trans, new_row], ignore_index=True))
+            st.success("Logged!")
 
 elif menu == "Wealth Portfolio":
-    st.title("Assets & Liabilities 🏦")
+    st.title("Wealth Portfolio & Trends 📈")
+    df_assets = get_data("Assets")
+    df_history = get_data("Asset_History")
     
-    tab1, tab2 = st.tabs(["Assets", "Liabilities"])
+    tab1, tab2 = st.tabs(["Asset Management", "Performance Trends"])
     
     with tab1:
-        df_assets = get_data("Assets")
         with st.form("asset_update"):
             c1, c2, c3 = st.columns(3)
-            with c1: a_type = st.selectbox("Type", ["Pension", "Study Fund", "Brokerage", "Crypto", "Cash", "Real Estate", "Other"])
-            with c2: a_name = st.text_input("Institution / Name")
-            with c3: a_val = st.number_input("Current Value (₪)", min_value=0.0)
+            with c1: a_name = st.text_input("Security/Asset Name (e.g. IB Portfolio)")
+            with c2: a_val = st.number_input("Current Value (₪)", min_value=0.0)
+            with c3: a_date = st.date_input("Validity Date (Update Date)")
             
-            if st.form_submit_button("Update Asset"):
-                if a_name.strip() != "":
+            a_type = st.selectbox("Asset Type", ["Pension", "Study Fund", "Brokerage", "Crypto", "Cash", "Real Estate"])
+            
+            if st.form_submit_button("Update Portfolio Entry"):
+                if a_name:
+                    # 1. Update Current Assets Sheet
                     if not df_assets.empty and a_name in df_assets['Name'].values:
                         df_assets.loc[df_assets['Name'] == a_name, 'Value'] = a_val
-                        df_assets.loc[df_assets['Name'] == a_name, 'Last_Update'] = pd.Timestamp.now().strftime("%Y-%m-%d")
+                        df_assets.loc[df_assets['Name'] == a_name, 'Last_Update'] = a_date.strftime("%Y-%m-%d")
                     else:
-                        new_asset = pd.DataFrame([[a_type, a_name, a_val, pd.Timestamp.now().strftime("%Y-%m-%d")]], columns=df_assets.columns)
+                        new_asset = pd.DataFrame([[a_type, a_name, a_val, a_date.strftime("%Y-%m-%d")]], columns=df_assets.columns)
                         df_assets = pd.concat([df_assets, new_asset], ignore_index=True)
                     conn.update(worksheet="Assets", data=df_assets)
-                    st.success("Asset updated!")
+                    
+                    # 2. Record in History for Trends
+                    new_hist = pd.DataFrame([[a_date.strftime("%Y-%m-%d"), a_name, a_val]], columns=df_history.columns)
+                    conn.update(worksheet="Asset_History", data=pd.concat([df_history, new_hist], ignore_index=True))
+                    
+                    st.success(f"Updated {a_name} for date {a_date}")
                     st.rerun()
-        if not df_assets.empty: st.dataframe(df_assets, use_container_width=True)
+
+        st.dataframe(df_assets, use_container_width=True)
 
     with tab2:
-        df_liab = get_data("Liabilities")
-        with st.form("liab_update"):
-            c1, c2, c3 = st.columns(3)
-            with c1: l_type = st.selectbox("Type", ["Credit Card", "Bank Loan", "Mortgage", "Personal Loan"])
-            with c2: l_name = st.text_input("Liability Name")
-            with c3: l_val = st.number_input("Outstanding Balance (₪)", min_value=0.0)
+        if not df_history.empty:
+            df_history['Date'] = pd.to_datetime(df_history['Date'])
+            df_history = df_history.sort_values('Date')
             
-            if st.form_submit_button("Update Liability"):
-                if l_name.strip() != "":
-                    if not df_liab.empty and l_name in df_liab['Name'].values:
-                        df_liab.loc[df_liab['Name'] == l_name, 'Amount'] = l_val
-                        df_liab.loc[df_liab['Name'] == l_name, 'Last_Update'] = pd.Timestamp.now().strftime("%Y-%m-%d")
-                    else:
-                        new_liab = pd.DataFrame([[l_type, l_name, l_val, pd.Timestamp.now().strftime("%Y-%m-%d")]], columns=df_liab.columns)
-                        df_liab = pd.concat([df_liab, new_liab], ignore_index=True)
-                    conn.update(worksheet="Liabilities", data=df_liab)
-                    st.success("Liability updated!")
-                    st.rerun()
-        if not df_liab.empty: st.dataframe(df_liab, use_container_width=True)
+            # Grouping for Multi-month trend
+            asset_to_track = st.selectbox("Select Asset to View Trend", ["All Assets"] + df_history['Asset_Name'].unique().tolist())
+            
+            if asset_to_track == "All Assets":
+                # Resample to monthly if needed or just show all
+                fig = px.line(df_history, x='Date', y='Value', color='Asset_Name', title="Asset Value Over Time")
+            else:
+                filtered_h = df_history[df_history['Asset_Name'] == asset_to_track]
+                fig = px.area(filtered_h, x='Date', y='Value', title=f"Trend for {asset_to_track}")
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No historical data yet. Start updating assets to see trends.")
 
 elif menu == "Target Buckets":
     st.title("Savings Buckets 🎯")
-    
-    with st.expander("➕ Create New Bucket"):
-        with st.form("new_bucket_form"):
-            c1, c2 = st.columns(2)
-            with c1: b_name = st.text_input("Bucket Name")
-            with c2: b_target = st.number_input("Target Amount (₪)", min_value=0.0)
-            if st.form_submit_button("Create Bucket"):
-                if b_name.strip() != "":
-                    df_buckets = get_data("Buckets")
-                    new_b = pd.DataFrame([[b_name, b_target, 0]], columns=["Name", "Target", "Saved"])
-                    updated = pd.concat([df_buckets, new_b], ignore_index=True)
-                    conn.update(worksheet="Buckets", data=updated)
-                    st.success(f"Bucket '{b_name}' created!")
-                    st.rerun()
-
     df_buckets = get_data("Buckets")
-    if not df_buckets.empty:
-        for index, row in df_buckets.iterrows():
-            st.write(f"**{row['Name']}**")
-            progress = min(row['Saved'] / row['Target'], 1.0) if row['Target'] > 0 else 0
-            st.progress(progress)
-            st.write(f"₪{row['Saved']:,.0f} / ₪{row['Target']:,.0f} ({progress*100:.1f}%)")
-            
-            with st.expander("Update Balance"):
-                new_val = st.number_input("Current Balance", value=float(row['Saved']), key=f"val_{index}")
-                if st.button("Save", key=f"btn_{index}"):
-                    df_buckets.at[index, 'Saved'] = new_val
-                    conn.update(worksheet="Buckets", data=df_buckets)
-                    st.rerun()
-            st.markdown("---")
+    
+    with st.expander("Create New Bucket"):
+        with st.form("new_b"):
+            n = st.text_input("Bucket Name")
+            t = st.number_input("Target Amount", min_value=0.0)
+            if st.form_submit_button("Add Bucket"):
+                new_b = pd.DataFrame([[n, t, 0]], columns=df_buckets.columns)
+                conn.update(worksheet="Buckets", data=pd.concat([df_buckets, new_b], ignore_index=True))
+                st.rerun()
+
+    for idx, row in df_buckets.iterrows():
+        st.write(f"**{row['Name']}**")
+        prog = min(row['Saved']/row['Target'], 1.0) if row['Target'] > 0 else 0
+        st.progress(prog)
+        val = st.number_input("Update Saved Amount", value=float(row['Saved']), key=f"b_{idx}")
+        if st.button("Save", key=f"btn_{idx}"):
+            df_buckets.at[idx, 'Saved'] = val
+            conn.update(worksheet="Buckets", data=df_buckets)
+            st.rerun()
 
 elif menu == "Settings":
-    st.title("System Settings ⚙️")
-    
-    st.subheader("Manage Categories")
+    st.title("Settings ⚙️")
     df_cats = get_data("Categories")
-    
-    with st.form("new_cat_form"):
-        c1, c2 = st.columns(2)
-        with c1: cat_type = st.selectbox("Category Type", ["Expense", "Income"])
-        with c2: new_cat_name = st.text_input("Category Name")
-        
+    with st.form("new_cat"):
+        t = st.selectbox("Type", ["Expense", "Income"])
+        n = st.text_input("Category Name")
         if st.form_submit_button("Add Category"):
-            if new_cat_name.strip() != "":
-                new_c = pd.DataFrame([[cat_type, new_cat_name]], columns=["Type", "Name"])
-                updated = pd.concat([df_cats, new_c], ignore_index=True)
-                conn.update(worksheet="Categories", data=updated)
-                st.success("Category added!")
-                st.rerun()
-            
-    if not df_cats.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write("**Expense Categories**")
-            st.dataframe(df_cats[df_cats["Type"] == "Expense"]["Name"], hide_index=True)
-        with c2:
-            st.write("**Income Categories**")
-            st.dataframe(df_cats[df_cats["Type"] == "Income"]["Name"], hide_index=True)
+            new_c = pd.DataFrame([[t, n]], columns=df_cats.columns)
+            conn.update(worksheet="Categories", data=pd.concat([df_cats, new_c], ignore_index=True))
+            st.rerun()
+    st.dataframe(df_cats)
